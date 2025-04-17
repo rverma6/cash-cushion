@@ -1,103 +1,154 @@
-import Image from "next/image";
+'use client';
 
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '@/context/AuthContext';
+import PlaidLinkConnector from '@/components/PlaidLinkConnector';
+import TransactionList from '@/components/TransactionList';
+import LoginButton from '@/components/LoginButton'; // Assuming you have this
+
+// Renamed function from DashboardPage to Home
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    const { user, isLoading: isAuthLoading, signOut } = useAuth();
+    const [currentItemId, setCurrentItemId] = useState<string | null>(null);
+    const [isCheckingItemId, setIsCheckingItemId] = useState(true); // Loading state for item ID check
+    const [fetchError, setFetchError] = useState<string | null>(null); // State for fetch errors
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
-  );
+    // Effect to fetch the user's Plaid item ID from the backend
+    useEffect(() => {
+        // Only run if auth is loaded and user is logged in
+        if (!isAuthLoading && user) {
+            const fetchItemId = async () => {
+                console.log("Auth loaded, user found. Fetching Plaid item ID from backend...");
+                setIsCheckingItemId(true); // Start loading
+                setFetchError(null); // Clear previous errors
+                try {
+                    const response = await fetch('/api/user/plaid-items'); // Use GET request
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.message || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        console.log("Fetched item_id:", data.item_id);
+                        setCurrentItemId(data.item_id); // Set state with fetched item_id (null if none)
+                    } else {
+                         // Handle cases where success is false but response was ok (less common)
+                         console.error("API call successful but returned success: false", data);
+                         throw new Error(data.message || 'Failed to retrieve Plaid item status.');
+                    }
+                } catch (error: any) {
+                    console.error("Error fetching Plaid item ID:", error);
+                    setFetchError(`Failed to load account connection status: ${error.message}`);
+                    setCurrentItemId(null); // Ensure state is cleared on error
+                } finally {
+                    setIsCheckingItemId(false); // Finished loading
+                }
+            };
+            fetchItemId();
+        } else if (!isAuthLoading && !user) {
+            // If auth loaded and no user, clear state and stop loading
+            setIsCheckingItemId(false);
+            setCurrentItemId(null);
+            setFetchError(null);
+        }
+        // This effect depends on the user object and auth loading state
+    }, [user, isAuthLoading]);
+
+
+    // Callback for PlaidLinkConnector upon successful connection - WRAPPED IN useCallback
+    const handlePlaidSuccess = useCallback((newItemId: string) => {
+        // user is added as a dependency for useCallback
+        if (!user) return;
+        console.log("Dashboard received new item ID via callback:", newItemId);
+        // Directly update the state. The next page load will fetch this from backend.
+        setCurrentItemId(newItemId);
+        setFetchError(null); // Clear any previous fetch errors
+        // Removed localStorage.setItem - state updated directly
+    }, [user]); // Dependency array for useCallback
+
+    // Handler for the demo disconnect button
+    const handleDisconnect = useCallback(() => { // Also wrap this for consistency if needed elsewhere
+        if (!user) return;
+        // TODO: Implement a backend call to delete/deactivate the item in DB
+        console.log("Disconnecting item ID:", currentItemId);
+        // Remove from state immediately for UI update
+        setCurrentItemId(null);
+        setFetchError(null);
+         // Removed localStorage.removeItem
+    }, [user, currentItemId]); // Added dependencies
+
+    // --- Render Logic ---
+
+    // Show main loading state while auth is checking
+    if (isAuthLoading) {
+        return <div className="flex justify-center items-center min-h-screen"><p>Loading authentication...</p></div>;
+    }
+
+    // If not loading and no user, show Login prompt
+    if (!user) {
+        return (
+            <main className="flex min-h-screen flex-col items-center justify-center p-12">
+                <h1 className="text-2xl font-bold mb-4">Welcome to Cash Cushion</h1>
+                <p className="mb-6 text-gray-600">Please log in to manage your account.</p>
+                <LoginButton />
+            </main>
+        );
+    }
+
+    // User is logged in, show dashboard content
+    return (
+        <main className="flex min-h-screen flex-col items-center p-4 md:p-12">
+            <div className="w-full max-w-4xl flex justify-between items-center mb-6">
+                <h1 className="text-2xl font-bold">Cash Cushion Dashboard</h1>
+                <button
+                   onClick={signOut}
+                   className="px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm"
+                >
+                    Sign Out ({user.email})
+                </button>
+            </div>
+
+            {/* Display error if fetching item ID failed */}
+             {fetchError && (
+                 <div className="mb-4 p-3 bg-red-100 text-red-700 border border-red-300 rounded w-full max-w-md">
+                   Error checking account connection: {fetchError}
+                 </div>
+             )}
+
+
+            {/* === Conditional Rendering Logic === */}
+            {isCheckingItemId ? (
+                // 1. Show loading state while checking for existing connection
+                <p>Checking account connection...</p>
+            ) : currentItemId ? (
+                // 2. If check complete and item exists, show transactions
+                <>
+                    <TransactionList itemId={currentItemId} />
+                    <button
+                        onClick={handleDisconnect}
+                        className="mt-4 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                    >
+                        Disconnect Account (Demo)
+                    </button>
+                </>
+            ) : (
+                // 3. If check complete and NO item exists (and no fetch error), show connector
+                //    We only reach here if isCheckingItemId is false and currentItemId is null/undefined
+                !fetchError && (
+                    <>
+                        <p className="mb-4 text-gray-600">Connect your bank account to get started.</p>
+                        <PlaidLinkConnector 
+                            onConnectionSuccess={handlePlaidSuccess} 
+                            currentItemId={currentItemId}
+                        />
+                    </>
+                )
+            )}
+            {/* End Conditional Rendering Logic */}
+
+        </main>
+    );
 }
