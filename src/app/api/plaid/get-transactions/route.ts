@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PlaidApi, Configuration, PlaidEnvironments, TransactionsGetRequest, PlaidError } from 'plaid';
+import { PlaidApi, Configuration, PlaidEnvironments, TransactionsGetRequest } from 'plaid';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import dayjs from 'dayjs'; // For date manipulation
 // Import Supabase client utilities
-import { createServerActionClient, createServiceRoleClient } from '@/lib/supabase/utils';
+import { createServerActionClient } from '@/lib/supabase/utils';
+import { fetchPlaidTransactions } from '@/lib/plaid/server';
 
 // --- Encryption Helpers ---
 const ALGORITHM = 'aes-256-gcm';
@@ -30,10 +31,11 @@ function decrypt(encryptedText: string): string {
     let decrypted = decipher.update(encrypted, 'hex', 'utf8');
     decrypted += decipher.final('utf8'); // Finalize decryption and check auth tag
     return decrypted;
-  } catch (error: any) {
+  } catch (error: unknown) {
       console.error("Decryption failed:", error);
       // Throw a specific error type or message for better handling
-      throw new Error(`Decryption failed: ${error.message}`);
+      const message = error instanceof Error ? error.message : 'Unknown decryption error';
+      throw new Error(`Decryption failed: ${message}`);
   }
 }
 // --- End Encryption Helpers ---
@@ -79,7 +81,7 @@ export async function POST(request: NextRequest) {
     console.log(`Get transactions request for authenticated user: ${userId}`);
 
     // 2. Get item_id from request body
-    const { item_id } = await request.json();
+    const { item_id } = (await request.json()) as { item_id: string };
     if (!item_id) {
       return NextResponse.json({ success: false, message: "Missing item_id" }, { status: 400 });
     }
@@ -115,10 +117,10 @@ export async function POST(request: NextRequest) {
     try {
       accessToken = decrypt(encryptedAccessToken);
       console.log("Access token decrypted successfully.");
-    } catch (decryptionError: any) {
-      // Log specific decryption errors and return a 500
+    } catch (decryptionError: unknown) {
       console.error("Decryption failed for item_id:", item_id, decryptionError);
-      return NextResponse.json({ success: false, message: `Failed to process access token: ${decryptionError.message}` }, { status: 500 });
+      const message = decryptionError instanceof Error ? decryptionError.message : 'Unknown decryption error';
+      return NextResponse.json({ success: false, message: `Failed to process access token: ${message}` }, { status: 500 });
     }
 
     // 5. Fetch transactions from Plaid
@@ -152,27 +154,116 @@ export async function POST(request: NextRequest) {
     // 6. Return transactions to the frontend
     return NextResponse.json({ success: true, transactions, accounts, item }, { status: 200 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in /api/plaid/get-transactions:", error);
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
 
     // Handle Plaid specific errors
-    if (error.response?.data?.error_code) { // Simple check for Plaid error structure
-      console.error("Plaid Error:", error.response.data);
-      return NextResponse.json(
-        { success: false, message: "Plaid API error", details: error.response.data.error_message || 'Unknown Plaid error' },
-        { status: error.response?.status || 500 }
-      );
+    let plaidErrorData: unknown = null;
+    let plaidStatusCode = 500;
+    if (typeof error === 'object' && error !== null && 'response' in error) {
+        const responseError = error.response as unknown;
+        if (typeof responseError === 'object' && responseError !== null && 'data' in responseError) {
+            const data = responseError.data as unknown;
+            if (typeof data === 'object' && data !== null && 'error_code' in data) {
+                plaidErrorData = data;
+                const status = ('status' in responseError && typeof responseError.status === 'number') ? responseError.status : 500;
+                plaidStatusCode = status;
+                console.error("Plaid Error:", plaidErrorData);
+
+                interface PlaidErrorData {
+                    error_message?: string;
+                }
+                const typedPlaidErrorData = plaidErrorData as PlaidErrorData;
+                const errorMessage = typedPlaidErrorData.error_message || 'Unknown Plaid error';
+
+                return NextResponse.json(
+                    { success: false, message: "Plaid API error", details: errorMessage },
+                    { status: plaidStatusCode }
+                );
+            }
+        }
     }
 
-     // Handle Database errors explicitly if needed, or rely on the generic message
-     if (error.message.includes('Database error')) {
-         console.error("Database Operation Error:", error.message);
-         return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+     // Handle Database errors explicitly if needed
+     if (message.includes('Database error')) {
+         console.error("Database Operation Error:", message);
+         return NextResponse.json({ success: false, message: message }, { status: 500 });
      }
 
     // Generic error handler
     return NextResponse.json(
-      { success: false, message: "Internal Server Error", details: error.message || 'An unexpected error occurred' },
+      { success: false, message: "Internal Server Error", details: message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET() {
+  try {
+    // Get session
+    const supabase = await createServerActionClient();
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { success: false, message: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
+    // Get the user's Plaid item_id
+    const { data: itemData, error: itemError } = await supabase
+      .from('plaid_items')
+      .select('item_id')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (itemError) {
+      console.error('Error fetching Plaid item:', itemError.message);
+      return NextResponse.json(
+        { success: false, message: 'Error fetching Plaid connection' },
+        { status: 500 }
+      );
+    }
+
+    if (!itemData?.item_id) {
+      return NextResponse.json(
+        { success: false, message: 'No Plaid account connected' },
+        { status: 404 }
+      );
+    }
+
+    // Fetch transactions
+    const transactions = await fetchPlaidTransactions(userId, itemData.item_id);
+
+    if (!transactions) {
+      return NextResponse.json(
+        { success: false, message: 'No transactions found' },
+        { status: 404 }
+      );
+    }
+
+    // Sort transactions by date (newest first)
+    const sortedTransactions = [...transactions].sort((a, b) => {
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+
+    return NextResponse.json({
+      success: true,
+      transactions: sortedTransactions,
+    });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error occurred' 
+      },
       { status: 500 }
     );
   }
